@@ -1,15 +1,19 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using PuppeteerSharp.Helpers;
 using PuppeteerSharp.Input;
+using PuppeteerSharp.Messaging;
 
 namespace PuppeteerSharp
 {
     /// <inheritdoc cref="PuppeteerSharp.IFrame" />
     public class Frame : IFrame, IEnvironment
     {
+        private readonly ConcurrentDictionary<Guid, TaskCompletionSource<FileChooser>> _fileChooserInterceptors = new();
+        private readonly TimeoutSettings _timeoutSettings = new();
         private Task<ElementHandle> _documentTask;
 
         internal Frame(FrameManager frameManager, string frameId, string parentFrameId, CDPSession client)
@@ -71,6 +75,37 @@ namespace PuppeteerSharp
         internal IsolatedWorld PuppeteerWorld => IsolatedRealm as IsolatedWorld;
 
         internal bool HasStartedLoading { get; private set; }
+
+        /// <summary>
+        /// WaitForFileChooserAsync.
+        /// </summary>
+        /// <param name="options">options.</param>
+        /// <returns>file chooser.</returns>
+        public async Task<FileChooser> WaitForFileChooserAsync(WaitForFileChooserOptions options = null)
+        {
+            if (_fileChooserInterceptors.IsEmpty)
+            {
+                await Client.SendAsync("Page.setInterceptFileChooserDialog", new PageSetInterceptFileChooserDialog
+                {
+                    Enabled = true,
+                }).ConfigureAwait(false);
+            }
+
+            var timeout = options?.Timeout ?? _timeoutSettings.Timeout;
+            var tcs = new TaskCompletionSource<FileChooser>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var guid = Guid.NewGuid();
+            _fileChooserInterceptors.TryAdd(guid, tcs);
+
+            try
+            {
+                return await tcs.Task.WithTimeout(timeout).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                _fileChooserInterceptors.TryRemove(guid, out _);
+                throw;
+            }
+        }
 
         /// <inheritdoc/>
         public Task<IResponse> GoToAsync(string url, NavigationOptions options)
